@@ -283,17 +283,6 @@ CONFIDENCE_LABELS = {
 # ─── Scheduler ────────────────────────────────────────────────────
 
 
-async def scheduler_loop(app: Application):
-    """Periodically poll sources and notify users."""
-    while True:
-        try:
-            await poll_and_notify(app)
-        except Exception as e:
-            logger.error("Scheduler error: %s", e, exc_info=True)
-
-        await asyncio.sleep(POLL_INTERVAL_MINUTES * 60)
-
-
 async def poll_and_notify(app: Application):
     """Poll sources, update state, and send stage-based notifications."""
     logger.info("Polling sources...")
@@ -418,15 +407,22 @@ async def main():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("health", cmd_health))
 
-    # Start scheduler in background
-    scheduler_task = asyncio.create_task(scheduler_loop(app))
+    # Schedule the poll loop via job_queue (runs inside the app's event loop)
+    app.job_queue.run_repeating(
+        poll_and_notify_wrapper,
+        interval=POLL_INTERVAL_MINUTES * 60,
+        first=5,  # first run after 5 seconds
+    )
     logger.info("Scheduler started (every %d minutes)", POLL_INTERVAL_MINUTES)
 
-    # Start bot
+    # Start bot (blocking — manages its own event loop)
     logger.info("Bot polling started")
     await app.run_polling()
 
-    scheduler_task.cancel()
+
+async def poll_and_notify_wrapper(context):
+    """Wrapper for job_queue — takes telegram Context instead of Application."""
+    await poll_and_notify(context.application)
 
 
 if __name__ == "__main__":
