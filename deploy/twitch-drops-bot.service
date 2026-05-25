@@ -1,5 +1,5 @@
 [Unit]
-Description=Twitch Drops Telegram Bot
+Description=Twitch Drops Bot — Telegram Commands
 After=network-online.target
 Wants=network-online.target
 
@@ -9,7 +9,7 @@ WorkingDirectory=%h/projects/twitch-drops-bot
 EnvironmentFile=%h/projects/twitch-drops-bot/.env
 ExecStart=%h/projects/twitch-drops-bot/venv/bin/python bot.py
 Restart=on-failure
-RestartSec=30
+RestartSec=10
 StandardOutput=journal
 StandardError=journal
 

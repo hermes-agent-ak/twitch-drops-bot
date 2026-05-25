@@ -1,0 +1,10 @@
+[Unit]
+Description=Twitch Drops Bot — Daily Drop Check
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/twitch-drops-bot
+EnvironmentFile=%h/projects/twitch-drops-bot/.env
+ExecStart=%h/projects/twitch-drops-bot/venv/bin/python run_once.py
+StandardOutput=journal
+StandardError=journal

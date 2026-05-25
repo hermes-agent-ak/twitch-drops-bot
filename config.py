@@ -7,7 +7,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TEL
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
 
 # --- Polling ---
-POLL_INTERVAL_MINUTES = int(os.environ.get("POLL_INTERVAL_MINUTES", "15"))
+POLL_INTERVAL_MINUTES = int(os.environ.get("POLL_INTERVAL_MINUTES", "1440"))
 
 # --- Game Mappings ---
 

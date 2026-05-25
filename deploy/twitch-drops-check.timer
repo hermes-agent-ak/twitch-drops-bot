@@ -1,0 +1,10 @@
+[Unit]
+Description=Twitch Drops Bot — Daily Drop Check Timer
+
+[Timer]
+OnCalendar=*-*-* 10:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

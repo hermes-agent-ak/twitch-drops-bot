@@ -65,15 +65,4 @@ def create_app() -> Application:
     # Register command handlers
     register_handlers(app)
 
-    # Start scheduler via job_queue
-    app.job_queue.run_repeating(
-        scheduler.poll,
-        interval=POLL_INTERVAL_MINUTES * 60,
-        first=5,
-    )
-    logger.info(
-        "Application built — scheduler every %d min, %d sources",
-        POLL_INTERVAL_MINUTES, len(sources),
-    )
-
     return app
