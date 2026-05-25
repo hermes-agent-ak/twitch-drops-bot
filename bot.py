@@ -14,7 +14,6 @@ Requirements:
 from dotenv import load_dotenv
 load_dotenv()
 
-import asyncio  # noqa: E402
 import logging  # noqa: E402
 import sys  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
@@ -378,7 +377,7 @@ async def poll_and_notify(app: Application):
             logger.warning("Invalid ADMIN_CHAT_ID: %s", ADMIN_CHAT_ID)
 
 
-async def main():
+def main():
     """Start the bot and scheduler."""
     if not TELEGRAM_BOT_TOKEN:
         logger.error(
@@ -407,23 +406,23 @@ async def main():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("health", cmd_health))
 
-    # Schedule the poll loop via job_queue (runs inside the app's event loop)
+    # Schedule the poll loop via job_queue
     app.job_queue.run_repeating(
         poll_and_notify_wrapper,
         interval=POLL_INTERVAL_MINUTES * 60,
-        first=5,  # first run after 5 seconds
+        first=5,
     )
     logger.info("Scheduler started (every %d minutes)", POLL_INTERVAL_MINUTES)
 
-    # Start bot (blocking — manages its own event loop)
+    # run_polling() is synchronous — creates and manages its own event loop
     logger.info("Bot polling started")
-    await app.run_polling()
+    app.run_polling()
 
 
 async def poll_and_notify_wrapper(context):
-    """Wrapper for job_queue — takes telegram Context instead of Application."""
+    """Wrapper for job_queue callback."""
     await poll_and_notify(context.application)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
