@@ -7,6 +7,9 @@ from handlers.status import cmd_status
 from handlers.health_cmd import cmd_health
 
 
+from handlers.testnotify import cmd_testnotify
+
+
 def register_handlers(app: Application):
     """Register all command handlers on the application."""
     app.add_handler(CommandHandler("start", cmd_start))
@@ -15,3 +18,4 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("health", cmd_health))
+    app.add_handler(CommandHandler("testnotify", cmd_testnotify))
