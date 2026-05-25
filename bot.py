@@ -234,71 +234,50 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ─── Notification Messages ────────────────────────────────────────
+
+STAGE_MESSAGES = {
+    "announced": (
+        "📢 <b>Upcoming Twitch Drops!</b>\n\n"
+        "Game: <b>{game}</b>\n"
+        "Campaign: {name}\n"
+        "Starts: {start}\n"
+        "Ends: {end}\n"
+        "Confidence: {confidence}\n\n"
+        "You'll get a reminder when the drops go live."
+    ),
+    "reminder_24h": (
+        "⏰ <b>Drops Start Tomorrow!</b>\n\n"
+        "Game: <b>{game}</b>\n"
+        "Campaign: {name}\n"
+        "Starts: {start}\n"
+        "Ends: {end}\n\n"
+        "Get ready to watch and claim!"
+    ),
+    "live": (
+        "🔴 <b>Drops Are LIVE NOW!</b>\n\n"
+        "Game: <b>{game}</b>\n"
+        "Campaign: {name}\n"
+        "Started: {start}\n"
+        "Ends: {end}\n\n"
+        "Watch participating streams to claim your drops!"
+    ),
+    "ending_soon": (
+        "⚠️ <b>Drops Ending Soon!</b>\n\n"
+        "Game: <b>{game}</b>\n"
+        "Campaign: {name}\n"
+        "Ends: {end}\n\n"
+        "Claim your drops before they're gone!"
+    ),
+}
+
+CONFIDENCE_LABELS = {
+    "HIGH": "HIGH ✅",
+    "MEDIUM": "MEDIUM ⚠️",
+    "LOW": "LOW ❔",
+}
+
 # ─── Scheduler ────────────────────────────────────────────────────
-
-
-async def poll_sources():
-    """Poll all sources, update state, send notifications."""
-    logger.info("Polling sources...")
-
-    # Fetch all sources in parallel
-    all_campaigns = []
-    source_errors = {}
-
-    tasks = {}
-    for name, source in SOURCES.items():
-        tasks[name] = asyncio.create_task(source.fetch())
-
-    for name, task in tasks.items():
-        try:
-            campaigns = await task
-            all_campaigns.extend(campaigns)
-            await health_monitor.record_success(name)
-            logger.info(
-                "Source %s: %d campaigns found", name, len(campaigns)
-            )
-        except Exception as e:
-            source_errors[name] = str(e)
-            await health_monitor.record_failure(name, str(e))
-            logger.error("Source %s failed: %s", name, e)
-
-    # Confidence scoring
-    scored = confidence_engine.score(all_campaigns)
-
-    # Upsert campaigns and detect new HIGH-confidence ones
-    new_high_confidence = []
-    for campaign, confidence in scored:
-        campaign_id = campaign.compute_id()
-        is_new = state.upsert_campaign(
-            campaign_id=campaign_id,
-            game=campaign.game,
-            campaign_name=campaign.campaign_name,
-            source=campaign.source,
-            starts_at=campaign.starts_at,
-            ends_at=campaign.ends_at,
-            confidence=confidence,
-        )
-        if is_new and confidence == "HIGH":
-            new_high_confidence.append(campaign)
-
-    # Send notifications for new HIGH-confidence campaigns
-    if new_high_confidence:
-        await notify_users(new_high_confidence)
-
-    logger.info(
-        "Poll complete: %d campaigns (%d new HIGH), %d errors",
-        len(scored), len(new_high_confidence), len(source_errors),
-    )
-
-
-async def notify_users(campaigns: list):
-    """Send Telegram notifications to subscribed users."""
-    # We need the bot application reference for sending messages
-    # This will be set up in main()
-    pass  # Implemented inline in the scheduler loop
-
-
-# ─── Main ─────────────────────────────────────────────────────────
 
 
 async def scheduler_loop(app: Application):
@@ -313,9 +292,10 @@ async def scheduler_loop(app: Application):
 
 
 async def poll_and_notify(app: Application):
-    """Poll sources and send notifications via the bot app."""
+    """Poll sources, update state, and send stage-based notifications."""
     logger.info("Polling sources...")
 
+    # 1. Fetch all sources
     all_campaigns = []
     for name, source in SOURCES.items():
         try:
@@ -327,13 +307,11 @@ async def poll_and_notify(app: Application):
             await health_monitor.record_failure(name, str(e))
             logger.error("Source %s failed: %s", name, e)
 
+    # 2. Confidence scoring + upsert into DB
     scored = confidence_engine.score(all_campaigns)
-
-    new_high = []
     for campaign, confidence in scored:
-        campaign_id = campaign.compute_id()
-        is_new = state.upsert_campaign(
-            campaign_id=campaign_id,
+        state.upsert_campaign(
+            campaign_id=campaign.compute_id(),
             game=campaign.game,
             campaign_name=campaign.campaign_name,
             source=campaign.source,
@@ -341,33 +319,34 @@ async def poll_and_notify(app: Application):
             ends_at=campaign.ends_at,
             confidence=confidence,
         )
-        if is_new and confidence == "HIGH":
-            new_high.append(campaign)
 
-    # Notify subscribed users
-    for campaign_data in new_high:
-        chat_ids = state.get_subscribed_users(campaign_data.game)
+    # 3. Find campaigns that need a notification at their current stage
+    due = state.get_campaigns_needing_notification()
+
+    for campaign in due:
+        next_stage = campaign["_next_stage"]
+        game = campaign["game"]
+        chat_ids = state.get_subscribed_users(game)
 
         if not chat_ids:
-            logger.info(
-                "No users subscribed to %s, skipping notification",
-                campaign_data.game,
-            )
+            logger.info("No subscribers for %s, skipping %s", game, next_stage)
+            state.advance_stage(campaign["id"], next_stage)
             continue
 
-        start = datetime.fromtimestamp(campaign_data.starts_at, tz=timezone.utc)
-        end = datetime.fromtimestamp(campaign_data.ends_at, tz=timezone.utc)
+        # Build notification message
+        start_dt = datetime.fromtimestamp(campaign["starts_at"], tz=timezone.utc)
+        end_dt = datetime.fromtimestamp(campaign["ends_at"], tz=timezone.utc)
+        conf_label = CONFIDENCE_LABELS.get(campaign["confidence"], campaign["confidence"])
 
-        msg = (
-            f"🎁 <b>New Twitch Drops!</b>\n\n"
-            f"Game: <b>{campaign_data.game}</b>\n"
-            f"Campaign: {campaign_data.campaign_name}\n"
-            f"Start: {start.strftime('%Y-%m-%d %H:%M UTC')}\n"
-            f"End: {end.strftime('%Y-%m-%d %H:%M UTC')}\n"
-            f"Confidence: HIGH ✅\n"
-            f"Sources: facepunch + steam_news"
+        msg = STAGE_MESSAGES[next_stage].format(
+            game=game,
+            name=campaign["campaign_name"],
+            start=start_dt.strftime("%Y-%m-%d %H:%M UTC"),
+            end=end_dt.strftime("%Y-%m-%d %H:%M UTC"),
+            confidence=conf_label,
         )
 
+        # Send to all subscribers
         for chat_id in chat_ids:
             try:
                 await app.bot.send_message(
@@ -375,34 +354,36 @@ async def poll_and_notify(app: Application):
                     text=msg,
                     parse_mode="HTML",
                 )
-                logger.info(
-                    "Notified %s about %s drops",
-                    chat_id, campaign_data.game,
-                )
+                logger.info("Sent '%s' for %s to %s", next_stage, game, chat_id)
             except Exception as e:
-                logger.error(
-                    "Failed to notify %s: %s", chat_id, e
-                )
+                logger.error("Failed to notify %s: %s", chat_id, e)
 
-        # Mark as notified
-        campaign_id = campaign_data.compute_id()
-        state.mark_notified(campaign_id)
+        # Advance to next stage
+        state.advance_stage(campaign["id"], next_stage)
 
-    # Health alerts to admin
+    logger.info(
+        "Poll complete: %d campaigns scored, %d notifications sent",
+        len(scored), len(due),
+    )
+
+    # 4. Health alerts to admin
     unhealthy = state.get_unhealthy_sources(3)
     if unhealthy and ADMIN_CHAT_ID:
-        admin_id = int(ADMIN_CHAT_ID)
-        for src in unhealthy:
-            await app.bot.send_message(
-                chat_id=admin_id,
-                text=(
-                    f"⚠️ <b>Source Health Alert</b>\n"
-                    f"Source: {src['source_name']}\n"
-                    f"Failures: {src['consecutive_failures']}\n"
-                    f"Error: {src.get('last_error', 'unknown')[:200]}"
-                ),
-                parse_mode="HTML",
-            )
+        try:
+            admin_id = int(ADMIN_CHAT_ID)
+            for src in unhealthy:
+                await app.bot.send_message(
+                    chat_id=admin_id,
+                    text=(
+                        f"⚠️ <b>Source Health Alert</b>\n"
+                        f"Source: {src['source_name']}\n"
+                        f"Failures: {src['consecutive_failures']}\n"
+                        f"Error: {src.get('last_error', 'unknown')[:200]}"
+                    ),
+                    parse_mode="HTML",
+                )
+        except ValueError:
+            logger.warning("Invalid ADMIN_CHAT_ID: %s", ADMIN_CHAT_ID)
 
 
 async def main():

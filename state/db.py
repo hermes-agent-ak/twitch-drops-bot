@@ -4,6 +4,7 @@ import json
 import logging
 import sqlite3
 import time
+
 from config import DB_PATH
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
     confidence TEXT NOT NULL DEFAULT 'LOW',
     first_seen INTEGER NOT NULL,
     last_seen INTEGER NOT NULL,
-    notified INTEGER DEFAULT 0
+    notification_stage TEXT DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -41,6 +42,9 @@ CREATE TABLE IF NOT EXISTS source_health (
 );
 """
 
+# Notification stages in order
+STAGES = ["announced", "reminder_24h", "live", "ending_soon"]
+
 
 class StateManager:
     """Manages persistent state in SQLite."""
@@ -48,12 +52,32 @@ class StateManager:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or DB_PATH
         self._init_db()
+        self._migrate()
 
     def _init_db(self):
         """Create tables if they don't exist."""
         with sqlite3.connect(self.db_path) as conn:
             conn.executescript(SCHEMA)
             conn.commit()
+
+    def _migrate(self):
+        """Migrate old schema: 'notified' column → 'notification_stage'."""
+        with sqlite3.connect(self.db_path) as conn:
+            cols = [r[1] for r in conn.execute(
+                "PRAGMA table_info(campaigns)"
+            ).fetchall()]
+
+            if "notified" in cols and "notification_stage" not in cols:
+                logger.info("Migrating: notified → notification_stage")
+                conn.execute(
+                    "ALTER TABLE campaigns ADD COLUMN notification_stage TEXT DEFAULT NULL"
+                )
+                # Convert old notified=1 → stage='live' (best guess: it was already active)
+                conn.execute(
+                    "UPDATE campaigns SET notification_stage = 'live' WHERE notified = 1"
+                )
+                conn.commit()
+                logger.info("Migration complete")
 
     # --- Campaigns ---
 
@@ -71,7 +95,7 @@ class StateManager:
         now = int(time.time())
         with sqlite3.connect(self.db_path) as conn:
             existing = conn.execute(
-                "SELECT id, notified FROM campaigns WHERE id = ?",
+                "SELECT id, notification_stage FROM campaigns WHERE id = ?",
                 (campaign_id,),
             ).fetchone()
 
@@ -88,8 +112,8 @@ class StateManager:
                 conn.execute(
                     """INSERT INTO campaigns
                        (id, game, campaign_name, source, starts_at,
-                        ends_at, confidence, first_seen, last_seen, notified)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+                        ends_at, confidence, first_seen, last_seen, notification_stage)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
                     (
                         campaign_id, game, campaign_name, source,
                         starts_at, ends_at, confidence, now, now,
@@ -98,28 +122,71 @@ class StateManager:
                 conn.commit()
                 return True  # new campaign
 
-    def mark_notified(self, campaign_id: str):
-        """Mark a campaign as notified."""
+    def advance_stage(self, campaign_id: str, stage: str):
+        """Advance a campaign to the next notification stage."""
+        if stage not in STAGES:
+            raise ValueError(f"Invalid stage: {stage}")
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "UPDATE campaigns SET notified = 1 WHERE id = ?",
-                (campaign_id,),
+                "UPDATE campaigns SET notification_stage = ? WHERE id = ?",
+                (stage, campaign_id),
             )
             conn.commit()
 
-    def get_unnotified_high_confidence(self) -> list[dict]:
-        """Get HIGH confidence campaigns that haven't been notified."""
+    def get_campaigns_needing_notification(self) -> list[dict]:
+        """Get campaigns that are due for a notification at their current stage.
+
+        Logic:
+        - NULL stage + any time → needs 'announced'
+        - 'announced' + within 24h of start → needs 'reminder_24h'
+        - 'reminder_24h' + past start → needs 'live'
+        - 'live' + within 24h of end → needs 'ending_soon'
+        - 'ending_soon' → done, no more notifications
+        - If campaign ended (ends_at < now) → skip entirely
+        """
+        now = int(time.time())
+        results = []
+
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                """SELECT * FROM campaigns
-                   WHERE confidence = 'HIGH' AND notified = 0
-                   ORDER BY first_seen DESC"""
+                "SELECT * FROM campaigns WHERE ends_at > ?",
+                (now,),
             ).fetchall()
-            return [dict(r) for r in rows]
+
+        for row in rows:
+            campaign = dict(row)
+            stage = campaign.get("notification_stage")
+            starts_at = campaign["starts_at"]
+            ends_at = campaign["ends_at"]
+
+            if stage is None:
+                # New campaign — announce immediately
+                campaign["_next_stage"] = "announced"
+                results.append(campaign)
+
+            elif stage == "announced" and now >= starts_at - 86400:
+                # Within 24h of start — send reminder
+                campaign["_next_stage"] = "reminder_24h"
+                results.append(campaign)
+
+            elif stage == "reminder_24h" and now >= starts_at:
+                # Campaign has started — send live notification
+                campaign["_next_stage"] = "live"
+                results.append(campaign)
+
+            elif stage == "live" and now >= ends_at - 86400:
+                # Within 24h of end — send ending soon
+                campaign["_next_stage"] = "ending_soon"
+                results.append(campaign)
+
+            # 'ending_soon' → no more notifications
+            # Campaigns that aren't due yet → skip
+
+        return results
 
     def get_active_campaigns(self, game: str | None = None) -> list[dict]:
-        """Get currently active (not ended) campaigns."""
+        """Get campaigns that haven't ended yet."""
         now = int(time.time())
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -150,7 +217,6 @@ class StateManager:
                 conn.commit()
                 return True
             except sqlite3.IntegrityError:
-                # Reactivate if previously deactivated
                 conn.execute(
                     "UPDATE users SET is_active = 1 WHERE chat_id = ?",
                     (chat_id,),
