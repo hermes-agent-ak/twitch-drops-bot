@@ -11,24 +11,27 @@ Requirements:
     TELEGRAM_BOT_TOKEN in .env (get from @BotFather with /newbot)
 """
 
-import asyncio
-import logging
-import sys
-from datetime import datetime, timezone
+from dotenv import load_dotenv
+load_dotenv()
 
-from telegram import Update
-from telegram.ext import (
+import asyncio  # noqa: E402
+import logging  # noqa: E402
+import sys  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
+
+from telegram import Update  # noqa: E402
+from telegram.ext import (  # noqa: E402
     Application,
     CommandHandler,
     ContextTypes,
 )
 
-from sources.facepunch import FacepunchScraper
-from sources.steam_news import SteamNewsChecker
-from state import StateManager
-from engine import ConfidenceEngine
-from health import HealthMonitor
-from config import (
+from sources.facepunch import FacepunchScraper  # noqa: E402
+from sources.steam_news import SteamNewsChecker  # noqa: E402
+from state import StateManager  # noqa: E402
+from engine import ConfidenceEngine  # noqa: E402
+from health import HealthMonitor  # noqa: E402
+from config import (  # noqa: E402
     POLL_INTERVAL_MINUTES,
     TELEGRAM_BOT_TOKEN,
     ADMIN_CHAT_ID,
